@@ -1,0 +1,488 @@
+---
+title: "452 Reg"
+author: "Kyle Deng"
+date: "11/30/2021"
+output: html_document
+---
+
+```{r, warning = F, message = F}
+library(knitr)
+library(tidyverse)
+library(here)
+library(leaps)
+library(MASS)
+library(glmnet)
+library(pls)
+library(mgcv)
+library(nnet)
+library(rpart)
+library(randomForest)
+library(gbm)
+opts_chunk$set(warning = FALSE, message = FALSE, 
+               autodep = TRUE, tidy = FALSE, cache = TRUE,
+               fig.dim=c(6,3.7))
+
+source(here("r\\Functions.R"))
+# Read in the dataset
+# raw_data <- read_csv(here()) 
+```
+
+## Visualize each explanatory variables' linear relationship with the response variable
+```{r, warning = F, message = F}
+pairs(raw_data)
+
+vars <- c(colnames(raw_data[, -1]))
+for(i in 1:length(vars)){
+  draw_linear(vars[i])
+}
+```
+
+## Check the important variables selected by the all subset regression, forward stepwise regression and the random forest
+```{r}
+# Visualization on the variable selections by the all subset model on the full data 
+allsub <- regsubsets(x = raw_data[, 2:16], y = raw_data$Y, nbest = 1)
+plot(allsub, main="All Subsets on project data")
+
+# Forward stepwise algorithm on the full data
+fit.start = lm(Y ~ 1, data = raw_data)
+fit.end = lm(Y ~ ., data = raw_data)
+step.BIC = step(fit.start, list(upper = fit.end), k = log(nrow(raw_data)))
+
+# Random Forest important variables
+rf = randomForest(Y ~ ., data = raw_data, importance = T)
+plot(rf)
+importance(rf)
+varImpPlot(rf)
+```
+
+## 10 fold cv on the regression models and store the MSPE of each fold from each model into a dataframe
+### Include OLS, stepwise, ridge, LASSO with minimum lambda or 1SE lambda, parial least square regrssion, GAM
+Functional forms might need adjustment depending on variable selection 
+```{r}
+set.seed(2928893)
+K = 10
+folds = get.folds(nrow(raw_data), K)
+all.MSPEs = matrix(NA, K, 14)
+colnames(all.MSPEs) = c("LS", "Step", "Ridge", "LASSO-Min", "LASSO-1SE", "PLS", 
+                        "GAM", "PPR", "Tuned NN", "Ptree-Min", "Ptree-1SE", "Default RF",
+                         "Tuned rf", "BT")
+for(i in 1:K){
+  data.train = raw_data[folds != i,]
+  data.valid = raw_data[folds == i,]
+  n.train = nrow(data.train)
+  Y.train = data.train$Y
+  Y.valid = data.valid$Y
+  
+  # LS
+  ls <- lm(Y ~ ., data = data.train)
+  pred.ls = predict(ls, newdata = data.valid)
+  all.MSPEs[i, "LS"] = get.MSPE(Y.valid, pred.ls)
+  
+  # Step
+  fit.start = lm(Y ~ 1, data = data.train)
+  fit.end = lm(Y ~ ., data = data.train)
+  step.BIC = step(fit.start, list(upper = fit.end), k = 2)
+  pred.step.BIC = predict(step.BIC, data.valid)
+  err.step.BIC = get.MSPE(Y.valid, pred.step.BIC)
+  all.MSPEs[i, "Step"] = err.step.BIC
+  
+  #Ridge
+  lambda.vals = seq(0, 100, 0.05)
+  ridge1 <- lm.ridge(Y ~ ., lambda = lambda.vals, data = data.train)
+  lambda.min = lambda.vals[which.min(ridge1$GCV)]
+  coef.min = coef(ridge1)[which.min(ridge1$GCV), ]
+  matrix.valid.ridge = model.matrix(Y ~ ., data = data.valid)
+  pred.ridge = matrix.valid.ridge %*% coef.min
+  all.MSPEs[i, "Ridge"] = get.MSPE(Y.valid, pred.ridge)
+  
+  #LASSO
+  X.train = as.matrix(data.train[, 2:16])
+  X.valid = as.matrix(data.valid[, 2:16])
+  cv.lasso = cv.glmnet(y = Y.train, x = X.train)
+  pre.lasso.min = predict(cv.lasso, newx = X.valid, s = cv.lasso$lambda.min)
+  pre.lasso.1se = predict(cv.lasso, newx = X.valid, s = cv.lasso$lambda.1se)
+  all.MSPEs[i, "LASSO-Min"] = get.MSPE(Y.valid, pre.lasso.min)
+  all.MSPEs[i, "LASSO-1SE"] = get.MSPE(Y.valid, pre.lasso.1se)
+  
+  #PLS
+  mod.pls = plsr(Y ~ ., data = data.train, validation = "CV")
+  mp.cv = mod.pls$validation
+  Opt.Comps = which.min(sqrt(mp.cv$PRESS/nrow(data.train)))
+  pred.pls = predict(mod.pls, data.valid, ncomp = Opt.Comps)
+  MSPE.pls = get.MSPE(Y.valid, pred.pls)
+  all.MSPEs[i, "PLS"] = MSPE.pls
+  
+  #GAM
+  mod.GAM = gam(Y ~ s(X1) + s(X2) + s(X3) + X4 + s(X5) + s(X6) + s(X7) + s(X8) + s(X9) + X10 + s(X11) + X12 + s(X13) + s(X14) + X15, data = data.train, family=gaussian(link=identity))
+  pred.GAM = predict(mod.GAM, data.valid)
+  MSPE.GAM = get.MSPE(Y.valid, pred.GAM)
+  all.MSPEs[i, "GAM"] = MSPE.GAM
+}
+```
+
+### Projection persuit
+```{r}
+set.seed(2928893)
+max.terms = 10
+K = 10
+folds = get.folds(nrow(raw_data), K)
+# CV.MSPEs = matrix(NA, K, 1)
+# colnames(CV.MSPEs) = c("PPR")
+# rownames(CV.MSPEs) = c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", 
+#                        "Fold 6", "Fold 7", "Fold 8", "Fold 9", "Fold 10")
+optimal.tune = matrix(NA, K, 1)
+colnames(optimal.tune) = "Optimal # terms"
+rownames(optimal.tune) = c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", 
+                           "Fold 6", "Fold 7", "Fold 8", "Fold 9", "Fold 10")
+for(i in 1:K){
+  data.train = raw_data[folds != i,]
+  data.valid = raw_data[folds == i,]
+  n.train = nrow(data.train)
+  Y.train = data.train$Y
+  Y.valid = data.valid$Y
+  
+  K.ppr = 5
+  n.train = nrow(data.train)
+  folds.ppr = get.folds(n.train, K.ppr)
+  MSPEs.ppr = array(0, dim = c(K.ppr, max.terms))
+  colnames(MSPEs.ppr) = c("1 term", "2 terms", "3 terms", "4 terms", "5 terms", "6 term", "7 terms", "8 terms", "9 terms", "10 terms")
+  
+  for(j in 1:K.ppr){
+    train.ppr = data.train[folds.ppr != j,]
+    valid.ppr = data.train[folds.ppr == j,] 
+    Y.valid.ppr = valid.ppr$Y
+    
+    for(l in 1:max.terms){
+      fit.ppr = ppr(Y ~ ., data = train.ppr, 
+        max.terms = max.terms, nterms = l, sm.method = "gcvspline")
+      pred.ppr = predict(fit.ppr, valid.ppr)
+      MSPE.ppr = get.MSPE(Y.valid.ppr, pred.ppr) 
+      MSPEs.ppr[j, l] = MSPE.ppr
+    }
+  }
+  ave.MSPE.ppr = apply(MSPEs.ppr, 2, mean)
+  
+  best.terms = which.min(ave.MSPE.ppr)
+  optimal.tune[i, "Optimal # terms"] = best.terms
+  
+  fit.ppr.best = ppr(Y ~ ., data = data.train,
+  max.terms = max.terms, nterms = best.terms, sm.method = "gcvspline")
+  
+  pred.ppr.best = predict(fit.ppr.best, data.valid)
+  MSPE.ppr.best = get.MSPE(Y.valid, pred.ppr.best)
+
+  all.MSPEs[i, "PPR"] = MSPE.ppr.best
+}
+```
+
+### Neural net
+```{r}
+set.seed(2928893)
+K = 10
+folds = get.folds(nrow(raw_data), K)
+# CV.MSPEs = matrix(NA, K, 1)
+# colnames(CV.MSPEs) = c("Tuned NN")
+# rownames(CV.MSPEs) = c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", 
+#                        "Fold 6", "Fold 7", "Fold 8", "Fold 9", "Fold 10")
+optimal.tune = matrix(NA, K, 2)
+colnames(optimal.tune) = c("Best hidden nodes", "Best shrinkage")
+rownames(optimal.tune) = c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", 
+                           "Fold 6", "Fold 7", "Fold 8", "Fold 9", "Fold 10")
+M = 5
+all.n.hidden = c(1, 5, 7, 15, 20)
+all.shrink = c(0.1, 0.5, 1, 2, 5)
+all.pars = expand.grid(n.hidden = all.n.hidden,
+                         shrink = all.shrink)
+n.pars = nrow(all.pars)
+K.nn = 5
+CV.nn = matrix(0, K.nn, n.pars)
+names.pars = paste0("(", all.pars$n.hidden,",",
+all.pars$shrink, ")")
+colnames(CV.nn) = names.pars
+
+for(i in 1:K){
+  print(paste0(i, " out of ", K))
+  data.train = raw_data[folds != i,]
+  data.valid = raw_data[folds == i,]
+  data.x.train.raw = data.train[, 2:16]
+  data.x.train.nn = rescale(data.x.train.raw, data.x.train.raw)
+
+  n.train = nrow(data.train)
+  Y.train = data.train$Y
+  data.x.valid.raw = data.valid[, 2:16]
+  data.x.valid.nn = rescale(data.x.valid.raw, data.x.train.raw)
+  Y.valid = data.valid$Y
+  folds.nn = get.folds(n.train, K.nn)
+
+  for(j in 1:K.nn){
+    train.nn = data.train[folds.nn != j,]
+    x.train.raw = train.nn[, 2:16]
+    x.train.nn = rescale(x.train.raw, x.train.raw)
+    y.train.nn = train.nn[, 1]
+
+    valid.nn = data.train[folds.nn == j,]
+    x.valid.raw = valid.nn[, 2:16]
+    x.valid.nn = rescale(x.valid.raw, x.train.raw)
+    y.valid.nn = valid.nn[, 1]
+
+    for(k in 1:n.pars){
+      this.n.hidden = all.pars[k,1]
+      this.shrink = all.pars[k,2]
+      all.nnets = list(1:M)
+      all.SSEs = rep(0, times = M)
+
+      for(l in 1:M){
+        fit.nnet = nnet(x.train.nn, y.train.nn, linout = TRUE, size = this.n.hidden,
+                        decay = this.shrink, maxit = 500, trace = FALSE)
+        SSE.nnet = fit.nnet$value
+        all.nnets[[l]] = fit.nnet
+        all.SSEs[l] = SSE.nnet
+      }
+      ind.best = which.min(all.SSEs)
+      fit.nnet.best = all.nnets[[ind.best]]
+      pred.nnet = predict(fit.nnet.best, x.valid.nn)
+      MSPE.nnet = get.MSPE(y.valid.nn$Y, pred.nnet)
+      CV.nn[j, k] = MSPE.nnet
+    }
+  }
+  ave.RMSPE.nn = apply(sqrt(CV.nn), 2, mean)
+  RMSPE.hidden = all.pars$n.hidden
+  RMSPE.shrink = all.pars$shrink
+  all.rcv = rbind(ave.RMSPE.nn, RMSPE.hidden, RMSPE.shrink)
+  best.hidden = all.rcv["RMSPE.hidden", which.min(all.rcv["ave.RMSPE.nn", ])]
+  best.shrink = all.rcv["RMSPE.shrink", which.min(all.rcv["ave.RMSPE.nn", ])]
+  optimal.tune[i, 1] = best.hidden
+  optimal.tune[i, 2] = best.shrink
+
+  best.nnets = list(1:M)
+  best.SSEs = rep(0, times = M)
+  for(p in 1:M){
+    fit.nnet.CV = nnet(data.x.train.nn, Y.train, linout = T, size = best.hidden, decay =
+                            best.shrink, maxit = 500, trace = F)
+    SSE.best.nnet = fit.nnet.CV$value
+    best.nnets[[p]] = fit.nnet.CV
+    best.SSEs[p] = SSE.best.nnet
+  }
+  ind.best.nnet = which.min(best.SSEs)
+  fit.nnet.CV.best = best.nnets[[ind.best.nnet]]
+  pred.nnet.best = predict(fit.nnet.CV.best, data.x.valid.nn)
+  all.MSPEs[i, "Tuned NN"] = get.MSPE(Y.valid, pred.nnet.best)
+}
+# optimal.tune
+```
+
+### Prunes trees
+```{r}
+set.seed(2928893)
+K = 10
+folds = get.folds(nrow(raw_data), K)
+# CV.MSPEs = matrix(NA, K, 2)
+# colnames(CV.MSPEs) = c("Ptree-Min", "Ptree-1SE")
+# rownames(CV.MSPEs) = c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", 
+#                        "Fold 6", "Fold 7", "Fold 8", "Fold 9", "Fold 10")
+for(i in 1:K){
+  data.train = raw_data[folds != i,]
+  data.valid = raw_data[folds == i,]
+  n.train = nrow(data.train)
+  Y.train = data.train$Y
+  Y.valid = data.valid$Y
+  
+  #Regression tree
+  pr.tree = rpart(Y ~ ., data = data.train, cp = 0)
+  info.tree = pr.tree$cptable
+  ind.min = which.min(info.tree[, "xerror"])
+  # Grab min Pruned tree cp value
+  CP.min.raw = info.tree[ind.min, "CP"]
+  CP.pup.min = ifelse(ind.min == 1, 1, info.tree[ind.min-1, 1])
+  cp.min = sqrt(CP.min.raw * CP.pup.min)
+  # Grab 1SE Pruned tree cp value
+  ind.1se = min(which(info.tree[, "xerror"] < info.tree[ind.min, 4] + info.tree[ind.min, 5]))
+  CP.1se.raw = info.tree[ind.1se, "CP"]
+  CP.pup.1se = ifelse(ind.1se == 1, 1, info.tree[ind.1se-1, 1])
+  cp.1se = sqrt(CP.1se.raw * CP.pup.1se)
+  
+  #Pruned tree-min
+  pr.tree.min = prune(pr.tree, cp.min)
+  pred.ptree.min = predict(pr.tree.min, data.valid)
+  MSPE.ptree.min = get.MSPE(Y.valid, pred.ptree.min)
+  all.MSPEs[i, "Ptree-Min"] = MSPE.ptree.min
+  
+  #Pruned tree-1SE
+  pr.tree.1se = prune(pr.tree, cp.1se)
+  pred.ptree.1se = predict(pr.tree.1se, data.valid)
+  MSPE.ptree.1se = get.MSPE(Y.valid, pred.ptree.1se)
+  all.MSPEs[i, "Ptree-1SE"] = MSPE.ptree.1se
+}
+```
+
+### Default random forest
+```{r}
+set.seed(2928893)
+K = 10
+folds = get.folds(nrow(raw_data), K)
+# MSPEs.rf = matrix(NA, K, 1)
+# colnames(MSPEs.rf) = c("Default RF")
+# rownames(MSPEs.rf) = c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", 
+#                        "Fold 6", "Fold 7", "Fold 8", "Fold 9", "Fold 10")
+for(i in 1:K){
+  data.train = raw_data[folds != i,]
+  data.valid = raw_data[folds == i,]
+  n.train = nrow(data.train)
+  Y.train = data.train$Y
+  Y.valid = data.valid$Y
+  
+  #RandomForest
+  default.rf <- randomForest(Y ~ ., data = data.train)
+  pred.rf = predict(default.rf, data.valid)
+  MSPE.rf = get.MSPE(Y.valid, pred.rf)
+  all.MSPEs[i, "Default RF"] = MSPE.rf
+}
+```
+
+### Tuned random forest 
+```{r}
+set.seed(2928893)
+K = 10
+folds = get.folds(nrow(raw_data), K)
+# CV.MSPEs = matrix(NA, K, 1)
+# colnames(CV.MSPEs) = c("Tuned rf")
+# rownames(CV.MSPEs) = c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", 
+#                        "Fold 6", "Fold 7", "Fold 8", "Fold 9", "Fold 10")
+optimal.par = matrix(NA, K, 2)
+colnames(optimal.par) = c("Best m", "Best node sizes")
+rownames(optimal.par) = c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", 
+                          "Fold 6", "Fold 7", "Fold 8", "Fold 9", "Fold 10")
+all.mtry = c(5, 7, 9, 11, 13)
+all.nodesize = c(6, 8, 10, 12)
+all.pars = expand.grid(mtry = all.mtry, nodesize = all.nodesize)
+n.pars = nrow(all.pars)
+K.rf = 5
+OOB.MSPEs = array(0, dim = c(K.rf, n.pars))
+names.pars = paste0(all.pars$mtry,"-", all.pars$nodesize)
+colnames(OOB.MSPEs) = names.pars
+for(i in 1:K){
+  print(paste0(i, " out of ", K))
+  data.train = raw_data[folds != i,]
+  data.valid = raw_data[folds == i,]
+  n.train = nrow(data.train)
+  Y.train = data.train$Y
+  Y.valid = data.valid$Y
+  for(j in 1:n.pars){
+    this.mtry = all.pars[j,"mtry"]
+    this.nodesize = all.pars[j,"nodesize"]
+    for(k in 1:K.rf){
+      fit.rf = randomForest(Y ~ ., data = data.train, importance = F,
+                            mtry = this.mtry, nodesize = this.nodesize)
+      OOB.pred = predict(fit.rf)
+      OOB.MSPE = get.MSPE(Y.train, OOB.pred)
+      OOB.MSPEs[k, j] = OOB.MSPE 
+    }
+  }
+  ave.OOBMSPEs = apply(OOB.MSPEs, 2, mean)
+  OOB.m = all.pars$mtry
+  OOB.nodesize = all.pars$nodesize
+  all.rcv = rbind(ave.OOBMSPEs, OOB.m, OOB.nodesize)
+  best.m = all.rcv["OOB.m", which.min(all.rcv["ave.OOBMSPEs", ])]
+  best.nodesize = all.rcv["OOB.nodesize", which.min(all.rcv["ave.OOBMSPEs", ])] 
+  optimal.par[i, 1] = best.m
+  optimal.par[i, 2] = best.nodesize
+  
+  fit.rf.best = randomForest(Y ~ ., data = data.train, importance = F, mtry = best.m, nodesize = best.nodesize)
+  
+  CV.pred.best = predict(fit.rf.best, data.valid)
+  CV.MSPE.best = get.MSPE(Y.valid, CV.pred.best)
+  all.MSPEs[i, "Tuned rf"] = CV.MSPE.best
+}
+# optimal.par
+```
+
+### Boosting tree
+```{r, warning = F, message = F}
+set.seed(2928893)
+K = 10
+folds = get.folds(nrow(raw_data), K)
+# BT.CV.MSPEs = matrix(NA, K, 1)
+# colnames(BT.CV.MSPEs) = c("BT")
+# rownames(BT.CV.MSPEs) = c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", 
+#                           "Fold 6", "Fold 7", "Fold 8", "Fold 9", "Fold 10")
+optimal.par = matrix(NA, K, 2)
+colnames(optimal.par) = c("Best depth", "Best shrinkage")
+rownames(optimal.par) = c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", 
+                          "Fold 6", "Fold 7", "Fold 8", "Fold 9", "Fold 10")
+all.depth = c(1, 2, 4, 6)
+all.shrink = c(0.0001, 0.001, 0.01, 0.1)
+all.pars = expand.grid(depth = all.depth, shrink = all.shrink)
+n.pars = nrow(all.pars)
+max.trees = 10000
+K.bt = 5
+BT.MSPEs = array(0, dim = c(K.bt, n.pars))
+names.pars = paste0(all.pars$depth,"-", all.pars$shrink)
+colnames(BT.MSPEs) = names.pars
+for(i in 1:K){
+  print(paste0(i, " out of ", K))
+  data.train = raw_data[folds != i,]
+  data.valid = raw_data[folds == i,]
+  n.train = nrow(data.train)
+  Y.train = data.train$Y
+  Y.valid = data.valid$Y
+  n.train = nrow(data.train)
+  folds.bt = get.folds(n.train, K.bt)
+  
+  for(j in 1:K.bt){
+    train.bt = data.train[folds.bt != j,]
+    valid.bt = data.train[folds.bt == j,] 
+    Y.valid.bt = valid.bt$Y
+    for(k in 1:n.pars){
+      this.depth = all.pars[k,"depth"]
+      this.shrink = all.pars[k,"shrink"]
+      fit.bt = gbm(Y ~ ., data = train.bt, distribution = "gaussian", 
+                   n.trees = max.trees, interaction.depth = this.depth, shrinkage = this.shrink, 
+                   bag.fraction = 0.8)
+      n.trees = gbm.perf(fit.bt, plot.it = F) * 2
+      if(n.trees > max.trees){
+        extra.trees = n.trees - max.trees
+        fit.bt = gbm.more(fit.bt, extra.trees)
+      }
+      pred.bt = predict(fit.bt, valid.bt, n.trees)
+      MSPE.bt = get.MSPE(Y.valid.bt, pred.bt)
+      BT.MSPEs[j, k] = MSPE.bt 
+    }
+  }
+  ave.CVMSPE.bt = apply(BT.MSPEs, 2, mean)
+  BT.depth = all.pars$depth
+  BT.shrink = all.pars$shrink
+  all.rcv = rbind(ave.CVMSPE.bt, BT.depth, BT.shrink)
+  best.depth = all.rcv["BT.depth", which.min(all.rcv["ave.CVMSPE.bt", ])]
+  best.shrink = all.rcv["BT.shrink", which.min(all.rcv["ave.CVMSPE.bt", ])] 
+  optimal.par[i, 1] = best.depth
+  optimal.par[i, 2] = best.shrink
+  
+  fit.bt.best = gbm(Y ~ ., data = data.train, distribution = "gaussian", 
+                    n.trees = max.trees, interaction.depth = best.depth, shrinkage = best.shrink, 
+                    bag.fraction = 0.8)
+  n.trees.best = gbm.perf(fit.bt.best, plot.it = F) * 2
+  if(n.trees.best > max.trees){
+    extra.trees = n.trees.best - max.trees
+    fit.bt.best = gbm.more(fit.bt.best, extra.trees)
+  }
+  bt.pred.best = predict(fit.bt.best, data.valid)
+  bt.MSPE.best = get.MSPE(Y.valid, bt.pred.best)
+  all.MSPEs[i, "BT"] = bt.MSPE.best
+}
+# BT.MSPEs
+# ave.CVMSPE.bt
+# optimal.par
+```
+
+### Model Comparison with MSPE and relative MSPE
+```{r}
+apply(all.MSPEs, 2, mean)
+boxplot(all.MSPEs, main = paste0("CV MSPEs over 10 folds"), las = 2)
+all.RMSPEs = apply(all.MSPEs, 1, function(W){
+  best = min(W)
+  return(W / best)
+})
+all.RMSPEs = t(all.RMSPEs)
+boxplot(all.RMSPEs, main = paste0("CV RMSPEs over 10 folds"), ylim = c(1, 1.02), las = 2)
+# write.csv(all.RMSPEs, " ")
+```
