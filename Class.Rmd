@@ -1,0 +1,693 @@
+---
+title: "452 Classification"
+author: "Kyle Deng"
+date: "12/1/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(here)
+library(car)
+library(FNN)
+library(nnet)
+library(glmnet)
+library(MASS)
+library(mgcv)
+library(klaR)
+library(rpart)
+library(randomForest)
+library(e1071)
+# Load the dataset 
+# data = read_csv() %>%
+#  mutate(Y = factor(Y)) # %>%
+
+  
+get.folds = function(n, K) {
+  n.fold = ceiling(n / K) 
+  fold.ids.raw = rep(1:K, times = n.fold) 
+  fold.ids = fold.ids.raw[1:n] 
+  folds.rand = fold.ids[sample.int(n)]
+  return(folds.rand)
+}
+get.error = function(Y, Y.hat){
+  return(mean(Y != Y.hat))
+}
+scale.1 <- function(x1,x2){
+  for(col in 1:ncol(x1)){
+    a <- mean(x2[,col])
+    b <- sd(x2[,col])
+    x1[,col] <- (x1[,col]-a)/b
+  }
+  x1
+}
+rescale <- function(x1,x2){
+  for(col in 1:ncol(x1)){
+    a <- min(x2[,col])
+    b <- max(x2[,col])
+    x1[,col] <- (x1[,col]-a)/(b-a)
+  }
+  x1
+}
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+```
+
+```{r}
+pairs(data)
+
+vars <- c(colnames(data[, -1]))
+for(i in 1:length(vars)){
+  draw_linear(vars[i])
+}
+```
+
+## Check important variables - logistic regression
+```{r, message=F, warning=F}
+set.seed (46685326, kind = "Mersenne-Twister")
+p.train = 0.5
+n = nrow(data)
+ind.random = sample(1:n)
+data.1 = data[ind.random <= floor(p.train*n),]
+data.2 = data[ind.random > floor(p.train*n),]
+
+data.rescale = data
+data.rescale[, -1] = rescale(data.rescale[, -1], data[, -1])
+full.log = nnet::multinom(Y ~ ., data = data.rescale, maxit = 2000)
+Anova(full.log)
+vif(full.log)
+
+data.1.rescale = data.1
+data.1.rescale[, -1] = rescale(data.1.rescale[, -1], data.1[, -1])
+data.1.log = nnet::multinom(Y ~ ., data = data.1.rescale, maxit = 2000)
+Anova(data.1.log)
+vif(data.1.log)
+
+data.2.rescale = data.2
+data.2.rescale[, -1] = rescale(data.2.rescale[, -1], data.2[, -1])
+data.2.log = nnet::multinom(Y ~ ., data = data.2.rescale, maxit = 2000)
+Anova(data.2.log)
+vif(data.2.log)
+```
+
+## Check important variables - LASSO
+```{r}
+set.seed (46685326, kind = "Mersenne-Twister")
+p.train = 0.5
+n = nrow(data)
+ind.random = sample(1:n)
+data.1 = data[ind.random <= floor(p.train*n),]
+data.2 = data[ind.random > floor(p.train*n),]
+
+data.rescale = data
+data.rescale[, -1] = rescale(data.rescale[, -1], data[, -1])
+X.data.scale = as.matrix(data.rescale[, -1])
+y.data = data$Y
+full.lasso = cv.glmnet(X.data.scale, y.data, family = "multinomial")
+lambda.min = full.lasso$lambda.min
+c <- coef(full.lasso, S = lambda.min)
+cmat <- cbind(c[[1]], c[[2]], c[[3]], c[[4]], c[[5]])
+round(cmat,2)
+cmat!=0
+
+data.rescale1 = data.1
+data.rescale1[, -1] = rescale(data.rescale1[, -1], data.1[, -1])
+X.data.scale1 = as.matrix(data.rescale1[, -1])
+y.data1 = data.1$Y
+full.lasso1 = cv.glmnet(X.data.scale1, y.data1, family = "multinomial")
+lambda.min1 = full.lasso1$lambda.min
+c1 <- coef(full.lasso1, S = lambda.min1)
+cmat1 <- cbind(c1[[1]], c1[[2]], c1[[3]], c1[[4]], c1[[5]])
+round(cmat1,2)
+cmat1!=0
+
+data.rescale2 = data.2
+data.rescale2[, -1] = rescale(data.rescale2[, -1], data.2[, -1])
+X.data.scale2 = as.matrix(data.rescale2[, -1])
+y.data2 = data.2$Y
+full.lasso2 = cv.glmnet(X.data.scale2, y.data2, family = "multinomial")
+lambda.min2 = full.lasso2$lambda.min
+c2 <- coef(full.lasso2, S = lambda.min2)
+cmat2 <- cbind(c2[[1]], c2[[2]], c2[[3]], c2[[4]], c2[[5]])
+round(cmat2,2)
+cmat2!=0
+```
+
+### Check important variables - Random Forest
+```{r}
+set.seed (46685326, kind = "Mersenne-Twister")
+p.train = 0.5
+n = nrow(data)
+ind.random = sample(1:n)
+data.1 = data[ind.random <= floor(p.train*n),]
+data.2 = data[ind.random > floor(p.train*n),]
+
+rf = randomForest(Y ~ ., data = data, importance=TRUE, keep.forest=TRUE)
+varImpPlot(rf)
+
+rf1 = randomForest(Y ~ ., data = data.1, importance=TRUE, keep.forest=TRUE)
+varImpPlot(rf1)
+
+rf2 = randomForest(Y ~ ., data = data.2, importance=TRUE, keep.forest=TRUE)
+varImpPlot(rf2)
+```
+
+### KNN
+```{r}
+set.seed (46685326, kind = "Mersenne-Twister")
+K = 10
+folds = get.folds(nrow(data), K)
+all.errors = matrix(NA, K, 15)
+colnames(all.errors) = c("KNN", "Logistic", "LASSO", "LDA", "QDA", "NB.kernel", "NB.normal", "NB.pc.ker", "NB.pc.nor", 
+                         "Ptree.min", "Ptree.1se", "RF.default", "RF.Tuned", "Neural.net", "SVM.Rad")
+for(i in 1:K){
+  print(paste0(i, " out of ", K))
+  data.train = data[folds != i,]
+  data.valid = data[folds == i,]
+  Y.train = data.train$Y
+  Y.valid = data.valid$Y
+  x.train.unscaled <- as.matrix(data.train[, -1])
+  x.train <- scale.1(x.train.unscaled, x.train.unscaled)
+  x.valid.unscaled <- as.matrix(data.valid[, -1])
+  x.valid <- scale.1(x.valid.unscaled, x.train.unscaled)
+  
+  K.knn = 500
+  mis.knn = rep(0, times = K.knn)
+  for(j in 1:K.knn){
+    knn = knn.cv(x.train, Y.train, k = i)
+    this.mis.CV = mean(knn != Y.train)
+    mis.knn[i] = this.mis.CV
+  }
+  k.min = which.min(mis.knn)
+  knn.best = knn(x.train, x.valid, Y.train, k.min)
+  this.error = get.error(Y.valid, knn.best)
+  all.errors[i, 1] = this.error
+}  
+```
+
+### Logistic
+```{r}
+set.seed (46685326, kind = "Mersenne-Twister")
+K = 10
+folds = get.folds(nrow(data), K)
+for(i in 1:K){
+  data.train = data[folds != i,]
+  data.valid = data[folds == i,]
+  Y.valid = data.valid$Y
+  data.train.scale <- data.train
+  data.valid.scale <- data.valid
+  data.train.scale[, -1] = rescale(data.train.scale[, -1], data.train[, -1])
+  data.valid.scale[, -1] = rescale(data.valid.scale[, -1], data.train[, -1])
+  
+  fit.log = nnet::multinom(Y ~ ., data = data.train.scale, maxit = 10000)
+  pred.log.valid = predict(fit.log, data.valid.scale)
+  this.error = get.error(Y.valid, pred.log.valid)
+  all.errors[i, 2] = this.error
+}  
+```
+
+### LASSO-min
+```{r}
+set.seed (46685326, kind = "Mersenne-Twister")
+K = 10
+folds = get.folds(nrow(data), K)
+for(i in 1:K){
+  print(paste0(i, " out of ", K))
+  data.train = data[folds != i,]
+  data.valid = data[folds == i,]
+  Y.train = data.train$Y
+  Y.valid = data.valid$Y
+  data.train.scale <- data.train
+  data.valid.scale <- data.valid
+  data.train.scale[, -1] = rescale(data.train.scale[, -1], data.train[, -1])
+  data.valid.scale[, -1] = rescale(data.valid.scale[, -1], data.train[, -1])
+  X.train.scale = as.matrix(data.train.scale[, -1])
+  X.valid.scale = as.matrix(data.valid.scale[, -1])
+  
+  fit.lasso = cv.glmnet(X.train.scale, Y.train, family = "multinomial")
+  lambda.min = fit.lasso$lambda.min
+  pred.lasso.valid = predict(fit.lasso, X.valid.scale, s = lambda.min, type = "class")
+  this.error = get.error(Y.valid, pred.lasso.valid)
+  all.errors[i, 3] = this.error
+}  
+```
+
+### LDA
+```{r}
+set.seed (46685326, kind = "Mersenne-Twister")
+K = 10
+folds = get.folds(nrow(data), K)
+for(i in 1:K){
+  print(paste0(i, " out of ", K))
+  data.train = data[folds != i,]
+  data.valid = data[folds == i,]
+  Y.train = data.train$Y
+  Y.valid = data.valid$Y
+  x.train.unscaled <- as.matrix(data.train[, -1])
+  x.train <- scale.1(x.train.unscaled, x.train.unscaled)
+  x.valid.unscaled <- as.matrix(data.valid[, -1])
+  x.valid <- scale.1(x.valid.unscaled, x.train.unscaled)
+  
+  fit.lda = lda(x.train, Y.train)
+  pred.lda.valid = predict(fit.lda, x.valid)$class
+  this.error = get.error(Y.valid, pred.lda.valid)
+  all.errors[i, 4] = this.error
+}  
+```
+
+<!-- ### BAG QDA -->
+```{r}
+# set.seed (46685326, kind = "Mersenne-Twister")
+# K = 10
+# folds = get.folds(nrow(data), K)
+# for(i in 1:K){
+#   print(paste0(i, " out of ", K))
+#   data.train = data[folds != i,]
+#   data.valid = data[folds == i,]
+#   Y.train = data.train$Y
+#   Y.valid = data.valid$Y
+#   x.train.unscaled <- as.matrix(data.train[, -1])
+#   x.train <- scale.1(x.train.unscaled, x.train.unscaled)
+#   x.valid.unscaled <- as.matrix(data.valid[, -1])
+#   x.valid <- scale.1(x.valid.unscaled, x.train.unscaled)
+#
+#   n.t = nrow(data.train)
+#   n.v = nrow(data.valid)
+#   reps = 500
+#   pred.QDA = matrix(NA, nrow=n.v, ncol=reps)
+#   for(f in 1:reps){
+#     samp = sample.int(n.t, size=n.t, replace=TRUE)
+#     train = data.train[samp, ]
+#     train.Y = train$Y
+#     train.x.unscaled = as.matrix(train[, -1])
+#     train.x = scale.1(train.x.unscaled, train.x.unscaled)
+#     fit.qda = qda(train.x, train.Y)
+#     pre.qda.valid = predict(fit.qda, x.valid)$class
+#     pred.QDA[, f] = pre.qda.valid
+#   }
+#   mode.qda = apply(pred.QDA, 1, getmode)
+#   this.error = get.error(as.numeric(Y.valid), mode.qda)
+#   all.errors[i, 5] = this.error
+# }
+```
+
+### QDA
+```{r}
+set.seed (46685326, kind = "Mersenne-Twister")
+K = 10
+folds = get.folds(nrow(data), K)
+for(i in 1:K){
+  print(paste0(i, " out of ", K))
+  data.train = data[folds != i,]
+  data.valid = data[folds == i,]
+  Y.train = data.train$Y
+  Y.valid = data.valid$Y
+  x.train.unscaled <- as.matrix(data.train[, -1])
+  x.train <- scale.1(x.train.unscaled, x.train.unscaled)
+  x.valid.unscaled <- as.matrix(data.valid[, -1])
+  x.valid <- scale.1(x.valid.unscaled, x.train.unscaled)
+  fit.qda = qda(x.train, Y.train)
+  pred.qda.valid = predict(fit.qda, x.valid)$class
+  this.error = get.error(Y.valid, pred.qda.valid)
+  all.errors[i, 5] = this.error
+}
+```
+
+### Naive Bayes
+```{r}
+set.seed (46685326, kind = "Mersenne-Twister")
+K = 10
+folds = get.folds(nrow(data), K)
+for(i in 1:K){
+  print(paste0(i, " out of ", K))
+  data.train = data[folds != i,]
+  data.valid = data[folds == i,]
+  X.train = data.train[, -1]
+  Y.train = data.train$Y
+  X.valid = data.valid[, -1]
+  Y.valid = data.valid$Y
+  # NB-kernel
+  fit.NB <- NaiveBayes(X.train, Y.train, usekernel = T)
+  NB.pred.test = predict(fit.NB, X.valid)$class
+  miss.NB.valid = get.error(Y.valid, NB.pred.test)
+  all.errors[i, 6] = miss.NB.valid
+  # NB-normal                      
+  fit.NB.normal <- NaiveBayes(X.train, Y.train, usekernel = F)
+  NNB.pred.test = predict(fit.NB.normal, X.valid)$class
+  miss.NNB.valid = get.error(Y.valid, NNB.pred.test)
+  all.errors[i, 7] = miss.NNB.valid
+  
+  fit.PCA = prcomp(X.train, scale. = T)
+  X.train.PC = fit.PCA$x 
+  X.valid.PC = predict(fit.PCA, data.valid)
+  # NB-pc-kernel
+  fit.NB.PC = NaiveBayes(X.train.PC, Y.train, usekernel = T)
+  pred.NB.PC.test = predict(fit.NB.PC, X.valid.PC)$class
+  miss.NB.PC.valid = get.error(Y.valid, pred.NB.PC.test)
+  all.errors[i, 8] = miss.NB.PC.valid
+  # NB-pc-normal
+  fit.NB.PC.normal = NaiveBayes(X.train.PC, Y.train, usekernel = F)
+  pred.NNB.PC.test = predict(fit.NB.PC.normal, X.valid.PC)$class
+  miss.NNB.PC.valid = get.error(Y.valid, pred.NNB.PC.test)
+  all.errors[i, 9] = miss.NNB.PC.valid
+}
+```
+
+### trees
+```{r}
+set.seed (46685326, kind = "Mersenne-Twister")
+K = 10
+folds = get.folds(nrow(data), K)
+for(i in 1:K){
+  print(paste0(i, " out of ", K))
+  data.train = data[folds != i,]
+  data.valid = data[folds == i,]
+  Y.valid = data.valid$Y
+  
+  full.tree = rpart(Y ~ ., data.train, method = "class", cp = 0)
+  info.tree = full.tree$cptable
+  minrow <- which.min(info.tree[,4])
+  cplow.min <- info.tree[minrow,1]
+  cpup.min <- ifelse(minrow==1, yes=1, no=info.tree[minrow-1,1])
+  cp.min <- sqrt(cplow.min*cpup.min)
+  se.row <- min(which(info.tree[,4] < info.tree[minrow,4]+info.tree[minrow,5]))
+  cplow.1se <- info.tree[se.row,1]
+  cpup.1se <- ifelse(se.row==1, yes=1, no=info.tree[se.row-1,1])
+  cp.1se <- sqrt(cplow.1se*cpup.1se)
+  # Pruned tree - min
+  fit.tree.min <- prune(full.tree, cp = cp.min)
+  pred.Ptree.min.valid = predict(fit.tree.min, data.valid, type = "class")
+  mis.Ptree.min.valid = get.error(Y.valid, pred.Ptree.min.valid)
+  all.errors[i, 10] = mis.Ptree.min.valid
+  # Prune tree - 1se
+  fit.tree.1se <- prune(full.tree, cp = cp.1se)
+  pred.Ptree.1se.valid = predict(fit.tree.1se, data.valid, type = "class")
+  mis.Ptree.1se.valid = get.error(Y.valid, pred.Ptree.1se.valid)
+  all.errors[i, 11] = mis.Ptree.1se.valid
+}
+```
+
+### Default random forest
+```{r}
+set.seed (46685326, kind = "Mersenne-Twister")
+K = 10
+folds = get.folds(nrow(data), K)
+for(i in 1:K){
+  print(paste0(i, " out of ", K))
+  data.train = data[folds != i,]
+  data.valid = data[folds == i,]
+  Y.valid = data.valid$Y
+  
+  fit.rf = randomForest(Y ~ ., data = data.train)
+  pred.rf = predict(fit.rf, data.valid)
+  mis.rf = get.error(Y.valid, pred.rf)
+  all.errors[i, 12] = mis.rf
+}
+```
+
+### Tuned random forest
+```{r}
+set.seed (46685326, kind = "Mersenne-Twister")
+K = 10
+folds = get.folds(nrow(data), K)
+
+optimal.par = matrix(NA, K, 2)
+colnames(optimal.par) = c("Best m", "Best node sizes")
+rownames(optimal.par) = c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", 
+                          "Fold 6", "Fold 7", "Fold 8", "Fold 9", "Fold 10")
+all.mtry = c(2, 3, 4)#(3, 4, 5, 6, 7)
+all.nodesize = c(1, 2, 6, 7, 8)
+all.pars = expand.grid(mtry = all.mtry, nodesize = all.nodesize)
+n.pars = nrow(all.pars)
+K.rf = 5
+OOB.errors = array(0, dim = c(K.rf, n.pars))
+names.pars = paste0(all.pars$mtry,"-", all.pars$nodesize)
+colnames(OOB.errors) = names.pars
+for(i in 1:K){
+  print(paste0(i, " out of ", K))
+  data.train = data[folds != i,]
+  data.valid = data[folds == i,]
+  Y.train = data.train$Y
+  Y.valid = data.valid$Y
+  for(j in 1:n.pars){
+    this.mtry = all.pars[j,"mtry"]
+    this.nodesize = all.pars[j,"nodesize"]
+    for(k in 1:K.rf){
+      fit.rf = randomForest(Y ~ ., data = data.train, importance = F,
+                            mtry = this.mtry, nodesize = this.nodesize)
+      OOB.pred = predict(fit.rf)
+      OOB.error = get.error(Y.train, OOB.pred)
+      OOB.errors[k, j] = OOB.error 
+    }
+  }
+  ave.OOBerrors = apply(OOB.errors, 2, mean)
+  OOB.m = all.pars$mtry
+  OOB.nodesize = all.pars$nodesize
+  all.rcv = rbind(ave.OOBerrors, OOB.m, OOB.nodesize)
+  best.m = all.rcv["OOB.m", which.min(all.rcv["ave.OOBerrors", ])]
+  best.nodesize = all.rcv["OOB.nodesize", which.min(all.rcv["ave.OOBerrors", ])] 
+  optimal.par[i, 1] = best.m
+  optimal.par[i, 2] = best.nodesize
+  fit.rf.best = randomForest(Y ~ ., data = data.train, importance = F, mtry = best.m, nodesize = best.nodesize)
+  pred.rf = predict(fit.rf.best, data.valid)
+  mis.rf = get.error(Y.valid, pred.rf)
+  all.errors[i, 13] = mis.rf
+}
+# optimal.par
+```
+
+### Neural net
+```{r}
+set.seed (46685326, kind = "Mersenne-Twister")
+K = 10
+folds = get.folds(nrow(data), K)
+
+optimal.tune = matrix(NA, K, 2)
+colnames(optimal.tune) = c("Best hidden nodes", "Best shrinkage")
+rownames(optimal.tune) = c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", 
+                           "Fold 6", "Fold 7", "Fold 8", "Fold 9", "Fold 10")
+M = 20
+all.n.hidden = c(1, 3, 6, 10)
+all.shrink = c(0, 0.001, 0.01, 0.1, 1)
+all.pars = expand.grid(n.hidden = all.n.hidden,
+                         shrink = all.shrink)
+n.pars = nrow(all.pars)
+K.nn = 5
+CV.nn = matrix(0, K.nn, n.pars)
+names.pars = paste0("(", all.pars$n.hidden,",",
+all.pars$shrink, ")")
+colnames(CV.nn) = names.pars
+for(i in 1:K){
+  print(paste0(i, " out of ", K))
+  data.train = data[folds != i,]
+  data.valid = data[folds == i,]
+  X.train.raw = data.train[, -1]
+  X.valid.raw = data.valid[, -1]
+  X.train = rescale(X.train.raw, X.train.raw)
+  X.valid = rescale(X.valid.raw, X.train.raw)
+  Y.train = class.ind(data.train$Y)
+  Y.valid = class.ind(data.valid$Y)
+  
+  n.train = nrow(data.train)
+  folds.nn = get.folds(n.train, K.nn)
+  for(j in 1:K.nn){
+    train.nn = data.train[folds.nn != j,]
+    x.train.raw.nn = train.nn[, -1]
+    x.train.nn = rescale(x.train.raw.nn, x.train.raw.nn)
+    y.train.nn = class.ind(train.nn$Y)
+
+    valid.nn = data.train[folds.nn == j,]
+    x.valid.raw.nn = valid.nn[, -1]
+    x.valid.nn = rescale(x.valid.raw.nn, x.train.raw.nn)
+    y.valid.nn = class.ind(valid.nn$Y)
+
+    for(k in 1:n.pars){
+      this.n.hidden = all.pars[k,1]
+      this.shrink = all.pars[k,2]
+      all.nnets = list(1:M)
+      all.ERs = rep(0, times = M)
+
+      for(l in 1:M){
+        fit.nnet = nnet(x.train.nn, y.train.nn, size = this.n.hidden,
+                        decay = this.shrink, maxit = 10000, softmax = T, trace = FALSE)
+        pre = predict(fit.nnet, x.train.nn, type = "class")
+        error = get.error(train.nn$Y, pre)
+        all.nnets[[l]] = fit.nnet
+        all.ERs[l] = error
+      }
+      ind.best = which.min(all.ERs)
+      fit.nnet.best = all.nnets[[ind.best]]
+      pred.nnet = predict(fit.nnet.best, x.valid.nn, type = "class")
+      Er.nnet = get.error(valid.nn$Y, pred.nnet)
+      CV.nn[j, k] = Er.nnet
+    }
+  }
+  ave.Err.nn = apply(CV.nn, 2, mean)
+  Err.hidden = all.pars$n.hidden
+  Err.shrink = all.pars$shrink
+  all.rcv = rbind(ave.Err.nn, Err.hidden, Err.shrink)
+  best.hidden = all.rcv["Err.hidden", which.min(all.rcv["ave.Err.nn", ])]
+  best.shrink = all.rcv["Err.shrink", which.min(all.rcv["ave.Err.nn", ])]
+  optimal.tune[i, 1] = best.hidden
+  optimal.tune[i, 2] = best.shrink
+  best.nnets = list(1:M)
+  best.ERRORs = rep(0, times = M)
+  for(p in 1:M){
+    fit.nnet.CV = nnet(X.train, Y.train, size = best.hidden, decay =
+                            best.shrink, maxit = 10000, softmax = T, trace = F)
+    pred.best.nnet = predict(fit.nnet.CV, X.train, type = "class")
+    Er.best.nnet = get.error(data.train$Y, pred.best.nnet)
+    best.nnets[[p]] = fit.nnet.CV
+    best.ERRORs[p] = Er.best.nnet
+  }
+  ind.best.nnet = which.min(best.ERRORs)
+  fit.nnet.CV.best = best.nnets[[ind.best.nnet]]
+  pred.nnet.best = predict(fit.nnet.CV.best, X.valid, type = "class")
+  all.errors[i, 14] = get.error(data.valid$Y, pred.nnet.best)
+}
+# optimal.tune
+```
+    
+### SVM-Radial
+```{r}
+set.seed (46685326, kind = "Mersenne-Twister")
+K = 10
+folds = get.folds(nrow(data), K)
+
+optimal.par = matrix(NA, K, 2)
+colnames(optimal.par) = c("Best C", "Best gamma")
+rownames(optimal.par) = c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", 
+                          "Fold 6", "Fold 7", "Fold 8", "Fold 9", "Fold 10")
+all.C = 10^(0:5)
+all.gamma = 10^(-(0:5))
+all.pars = expand.grid(C = all.C, gamma = all.gamma)
+n.pars = nrow(all.pars)
+K.svm = 5
+svm.errors = array(0, dim = c(K.svm, n.pars))
+names.pars = paste0(all.pars$C,"-", all.pars$gamma)
+colnames(svm.errors) = names.pars
+for(i in 1:K){
+  print(paste0(i, " out of ", K))
+  data.train = data[folds != i,]
+  data.valid = data[folds == i,]
+  Y.train = data.train$Y
+  Y.valid = data.valid$Y
+  
+  n.train = nrow(data.train)
+  fold.svm = get.folds(n.train, K.svm)
+  for(j in 1:n.pars){
+    this.c = all.pars[j,"C"]
+    this.gamma = all.pars[j,"gamma"]
+    for(k in 1:K.svm){
+      train.svm = data.train[fold.svm != k,]
+      valid.svm = data.train[fold.svm == k,]
+      Y.svm.valid = valid.svm$Y
+      fit.svm = svm(data = train.svm, Y ~ ., kernel = "radial", cost = this.c, gamma = this.gamma)
+      svm.pred = predict(fit.svm, valid.svm)
+      svm.error = get.error(Y.svm.valid, svm.pred)
+      svm.errors[k, j] = svm.error 
+    }
+  }
+  ave.SVMerrors = apply(svm.errors, 2, mean)
+  c = all.pars$C
+  gamma = all.pars$gamma
+  all.rcv = rbind(ave.SVMerrors, c, gamma)
+  best.c = all.rcv["c", which.min(all.rcv["ave.SVMerrors", ])]
+  best.gamma = all.rcv["gamma", which.min(all.rcv["ave.SVMerrors", ])] 
+  optimal.par[i, 1] = best.c
+  optimal.par[i, 2] = best.gamma
+  fit.svm.best = svm(data = data.train, Y ~ ., kernel = "radial", cost = best.c, gamma = best.gamma)
+  pred.svm = predict(fit.svm.best, data.valid)
+  mis.svm = get.error(Y.valid, pred.svm)
+  all.errors[i, 15] = mis.svm
+}
+# optimal.par
+```
+
+
+
+```{r}
+data = data %>%
+  dplyr::select(Y, X1, X2, X4, X6, X7, X8, X9, X10, X11, X12, X13, X16)
+set.seed (46685326, kind = "Mersenne-Twister")
+K = 10
+folds = get.folds(nrow(data), K)
+all.errors = matrix(NA, K, 1)
+colnames(all.errors) = c("SVM-Rad")
+
+optimal.par = matrix(NA, K, 2)
+colnames(optimal.par) = c("Best C", "Best gamma")
+rownames(optimal.par) = c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", 
+                          "Fold 6", "Fold 7", "Fold 8", "Fold 9", "Fold 10")
+all.C = 10^(0:5)
+all.gamma = 10^(-(0:5))
+all.pars = expand.grid(C = all.C, gamma = all.gamma)
+n.pars = nrow(all.pars)
+K.svm = 5
+svm.errors = array(0, dim = c(K.svm, n.pars))
+names.pars = paste0(all.pars$C,"-", all.pars$gamma)
+colnames(svm.errors) = names.pars
+for(i in 1:K){
+  print(paste0(i, " out of ", K))
+  data.train = data[folds != i,]
+  data.valid = data[folds == i,]
+  Y.train = data.train$Y
+  Y.valid = data.valid$Y
+  
+  n.train = nrow(data.train)
+  fold.svm = get.folds(n.train, K.svm)
+  for(j in 1:n.pars){
+    this.c = all.pars[j,"C"]
+    this.gamma = all.pars[j,"gamma"]
+    for(k in 1:K.svm){
+      train.svm = data.train[fold.svm != k,]
+      valid.svm = data.train[fold.svm == k,]
+      Y.svm.valid = valid.svm$Y
+      fit.svm = svm(data = train.svm, Y ~ ., kernel = "radial", cost = this.c, gamma = this.gamma)
+      svm.pred = predict(fit.svm, valid.svm)
+      svm.error = get.error(Y.svm.valid, svm.pred)
+      svm.errors[k, j] = svm.error 
+    }
+  }
+  ave.SVMerrors = apply(svm.errors, 2, mean)
+  c = all.pars$C
+  gamma = all.pars$gamma
+  all.rcv = rbind(ave.SVMerrors, c, gamma)
+  best.c = all.rcv["c", which.min(all.rcv["ave.SVMerrors", ])]
+  best.gamma = all.rcv["gamma", which.min(all.rcv["ave.SVMerrors", ])] 
+  optimal.par[i, 1] = best.c
+  optimal.par[i, 2] = best.gamma
+  
+  n.t = nrow(data.train)
+  n.v = nrow(data.valid)
+  reps = 1000
+  pred.SVM = matrix(NA, nrow=n.v, ncol=reps)
+  for(f in 1:reps){
+    samp = sample.int(n.t, size=n.t, replace=TRUE)
+    train = data.train[samp, ]
+    fit.svm.best = svm(data = train, Y ~ ., kernel = "radial", cost = best.c, gamma = best.gamma)
+    pre.svm = predict(fit.svm.best, data.valid)
+    pred.SVM[, f] = pre.svm
+  }
+  mode.svm = apply(pred.SVM, 1, getmode)
+  this.error = get.error(as.numeric(Y.valid), mode.svm)
+  all.errors[i, 1] = this.error
+}
+optimal.par
+errors = read.csv("C:\\Users\\kyle1\\OneDrive - Simon Fraser University (1sfu)\\Stat 452\\Errors.csv")[, -1]
+errors = cbind(errors, all.errors)
+errors
+
+apply(errors, 2, mean)
+boxplot(errors, main = paste0("CV errors over 10 folds"), las = 2)
+all.RERRORs = apply(errors, 1, function(W){
+  best = min(W)
+  return(W / best)
+})
+all.RERRORs = t(all.RERRORs)
+boxplot(all.RERRORs, main = paste0("CV Relative errors over 10 folds"), ylim = c(1, 2), las = 2)
+# write.csv(errors, "C:/Users/kyle1/OneDrive - Simon Fraser University (1sfu)/Stat 452/Errors.csv")
+```
+

@@ -31,3 +31,24 @@ draw_linear <- function(var){
     theme(plot.title = element_text(hjust = 0.5))
   print(draw)
 }
+
+# Calculate the misclassification rate
+get.error = function(Y, Y.hat){
+  return(mean(Y != Y.hat))
+}
+
+# Scale the dataset by standardization
+scale.1 <- function(x1,x2){
+  for(col in 1:ncol(x1)){
+    a <- mean(x2[,col])
+    b <- sd(x2[,col])
+    x1[,col] <- (x1[,col]-a)/b
+  }
+  x1
+}
+
+# Obtain the mode 
+getmode <- function(v) {
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
