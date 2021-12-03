@@ -6,6 +6,7 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
+library(knitr)
 library(tidyverse)
 library(here)
 library(car)
@@ -18,41 +19,14 @@ library(klaR)
 library(rpart)
 library(randomForest)
 library(e1071)
+opts_chunk$set(warning = FALSE, message = FALSE, 
+               autodep = TRUE, tidy = FALSE, cache = TRUE,
+               fig.dim=c(6,3.7))
+
+source(here("r\\Functions.R"))
 # Load the dataset 
 # data = read_csv() %>%
 #  mutate(Y = factor(Y)) # %>%
-
-  
-get.folds = function(n, K) {
-  n.fold = ceiling(n / K) 
-  fold.ids.raw = rep(1:K, times = n.fold) 
-  fold.ids = fold.ids.raw[1:n] 
-  folds.rand = fold.ids[sample.int(n)]
-  return(folds.rand)
-}
-get.error = function(Y, Y.hat){
-  return(mean(Y != Y.hat))
-}
-scale.1 <- function(x1,x2){
-  for(col in 1:ncol(x1)){
-    a <- mean(x2[,col])
-    b <- sd(x2[,col])
-    x1[,col] <- (x1[,col]-a)/b
-  }
-  x1
-}
-rescale <- function(x1,x2){
-  for(col in 1:ncol(x1)){
-    a <- min(x2[,col])
-    b <- max(x2[,col])
-    x1[,col] <- (x1[,col]-a)/(b-a)
-  }
-  x1
-}
-getmode <- function(v) {
-   uniqv <- unique(v)
-   uniqv[which.max(tabulate(match(v, uniqv)))]
-}
 ```
 
 ```{r}
@@ -160,8 +134,9 @@ set.seed (46685326, kind = "Mersenne-Twister")
 K = 10
 folds = get.folds(nrow(data), K)
 all.errors = matrix(NA, K, 15)
-colnames(all.errors) = c("KNN", "Logistic", "LASSO", "LDA", "QDA", "NB.kernel", "NB.normal", "NB.pc.ker", "NB.pc.nor", 
-                         "Ptree.min", "Ptree.1se", "RF.default", "RF.Tuned", "Neural.net", "SVM.Rad")
+colnames(all.errors) = c("KNN", "Logistic", "LASSO", "LDA", "QDA", "NB.kernel", "NB.normal", 
+                         "NB.pc.ker", "NB.pc.nor", "Ptree.min", "Ptree.1se", "RF.default", "RF.Tuned", 
+                         "Neural.net", "SVM.Rad")
 for(i in 1:K){
   print(paste0(i, " out of ", K))
   data.train = data[folds != i,]
