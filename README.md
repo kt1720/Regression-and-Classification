@@ -1,2 +1,2 @@
-# Reg-n-Classification
+# Regression-and-Classification
 Templates for regression or classification projects 
