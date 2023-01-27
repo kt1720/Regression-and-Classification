@@ -651,7 +651,7 @@ for(i in 1:K){
   all.errors[i, 1] = this.error
 }
 optimal.par
-errors = read.csv("C:\\Users\\kyle1\\OneDrive - Simon Fraser University (1sfu)\\Stat 452\\Errors.csv")[, -1]
+errors = read.csv("r\\Errors.csv")[, -1]
 errors = cbind(errors, all.errors)
 errors
 
@@ -663,6 +663,6 @@ all.RERRORs = apply(errors, 1, function(W){
 })
 all.RERRORs = t(all.RERRORs)
 boxplot(all.RERRORs, main = paste0("CV Relative errors over 10 folds"), ylim = c(1, 2), las = 2)
-# write.csv(errors, "C:/Users/kyle1/OneDrive - Simon Fraser University (1sfu)/Stat 452/Errors.csv")
+# write.csv(errors, "r\\Errors.csv")
 ```
 
